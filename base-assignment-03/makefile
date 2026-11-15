@@ -1,8 +1,10 @@
+
 CC = gcc
 CFLAGS = -Wall -Wextra -g -Iinclude
 
 TARGET = bin/myshell
-OBJECTS = obj/main.o obj/shell.o obj/execute.o
+
+OBJECTS = obj/main.o obj/shell.o obj/execute.o obj/builtins.o
 
 all: $(TARGET)
 
