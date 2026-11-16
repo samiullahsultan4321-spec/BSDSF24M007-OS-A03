@@ -1,61 +1,242 @@
-
 #include "shell.h"
 
-char* read_cmd(char* prompt, FILE* fp)
+// Add an argument to a command
+static int add_argument(Command* command, char* argument)
 {
-    char* cmdline = malloc(MAX_LEN * sizeof(char));
+    char** temp = realloc(
+        command->argv,
+        sizeof(char*) * (command->argc + 2)
+    );
 
-    if (cmdline == NULL) {
-        perror("malloc");
-        return NULL;
+    if (temp == NULL) {
+        perror("realloc");
+        return -1;
     }
 
-    printf("%s", prompt);
-    fflush(stdout);
+    command->argv = temp;
+    command->argv[command->argc] = argument;
+    command->argc++;
 
-    if (fgets(cmdline, MAX_LEN, fp) == NULL) {
-        free(cmdline);
-        return NULL;
-    }
+    command->argv[command->argc] = NULL;
 
-    cmdline[strcspn(cmdline, "\n")] = '\0';
-
-    return cmdline;
+    return 0;
 }
 
-char** tokenize(char* cmdline)
-{
-    char** arglist = malloc((MAXARGS + 1) * sizeof(char*));
 
-    if (arglist == NULL) {
-        perror("malloc");
+// Create a new command
+static Command* create_command(void)
+{
+    Command* command = calloc(1, sizeof(Command));
+
+    if (command == NULL) {
+        perror("calloc");
         return NULL;
     }
 
-    int i = 0;
-    char* token = strtok(cmdline, " \t");
+    return command;
+}
 
-    while (token != NULL && i < MAXARGS) {
-        arglist[i] = malloc(strlen(token) + 1);
 
-        if (arglist[i] == NULL) {
-            perror("malloc");
+// Free all parsed commands
+void free_commands(Command* commands)
+{
+    while (commands != NULL) {
 
-            for (int j = 0; j < i; j++) {
-                free(arglist[j]);
+        Command* next = commands->next;
+
+        for (int i = 0; i < commands->argc; i++) {
+            free(commands->argv[i]);
+        }
+
+        free(commands->argv);
+        free(commands->input_file);
+        free(commands->output_file);
+        free(commands);
+
+        commands = next;
+    }
+}
+
+
+// Tokenize and parse the command line
+Command* tokenize(char* cmdline)
+{
+    if (cmdline == NULL) {
+        return NULL;
+    }
+
+    Command* head = create_command();
+
+    if (head == NULL) {
+        return NULL;
+    }
+
+    Command* current = head;
+
+    char pending_redirection = '\0';
+
+    const char* p = cmdline;
+
+    while (*p != '\0') {
+
+        // Skip whitespace
+        while (isspace((unsigned char)*p)) {
+            p++;
+        }
+
+        if (*p == '\0') {
+            break;
+        }
+
+        // Handle special operators
+        if (*p == '<' || *p == '>') {
+
+            if (pending_redirection != '\0') {
+                fprintf(stderr, "Syntax error: missing filename\n");
+                free_commands(head);
+                return NULL;
             }
 
-            free(arglist);
+            if (*p == '<' && current->input_file != NULL) {
+                fprintf(stderr, "Syntax error: duplicate input redirection\n");
+                free_commands(head);
+                return NULL;
+            }
+
+            if (*p == '>' && current->output_file != NULL) {
+                fprintf(stderr, "Syntax error: duplicate output redirection\n");
+                free_commands(head);
+                return NULL;
+            }
+
+            pending_redirection = *p;
+            p++;
+
+            continue;
+        }
+
+        // Handle pipe
+        if (*p == '|') {
+
+            if (pending_redirection != '\0' || current->argc == 0) {
+                fprintf(stderr, "Syntax error near pipe\n");
+                free_commands(head);
+                return NULL;
+            }
+
+            current->next = create_command();
+
+            if (current->next == NULL) {
+                free_commands(head);
+                return NULL;
+            }
+
+            current = current->next;
+            p++;
+
+            continue;
+        }
+
+        // Parse a word, preserving quoted content
+        size_t capacity = strlen(p) + 1;
+        char* word = malloc(capacity);
+
+        if (word == NULL) {
+            perror("malloc");
+            free_commands(head);
             return NULL;
         }
 
-        strcpy(arglist[i], token);
+        size_t i = 0;
+        char quote = '\0';
+        int started = 0;
 
-        i++;
-        token = strtok(NULL, " \t");
+        while (*p != '\0') {
+
+            if (quote == '\0' &&
+                (isspace((unsigned char)*p) ||
+                 *p == '<' || *p == '>' || *p == '|')) {
+                break;
+            }
+
+            if (*p == '\\' && quote != '\'') {
+
+                if (*(p + 1) != '\0') {
+                    word[i++] = *(p + 1);
+                    p += 2;
+                    started = 1;
+                    continue;
+                }
+            }
+
+            if (*p == '\'' || *p == '"') {
+
+                if (quote == '\0') {
+                    quote = *p;
+                    started = 1;
+                    p++;
+                    continue;
+                }
+
+                if (quote == *p) {
+                    quote = '\0';
+                    p++;
+                    continue;
+                }
+            }
+
+            word[i++] = *p;
+            p++;
+            started = 1;
+        }
+
+        if (quote != '\0') {
+            fprintf(stderr, "Syntax error: unmatched quotation mark\n");
+            free(word);
+            free_commands(head);
+            return NULL;
+        }
+
+        word[i] = '\0';
+
+        if (!started) {
+            free(word);
+            continue;
+        }
+
+        // Assign the word to the pending redirection
+        if (pending_redirection == '<') {
+            current->input_file = word;
+            pending_redirection = '\0';
+        }
+
+        else if (pending_redirection == '>') {
+            current->output_file = word;
+            pending_redirection = '\0';
+        }
+
+        // Otherwise, add it as a command argument
+        else {
+            if (add_argument(current, word) != 0) {
+                free(word);
+                free_commands(head);
+                return NULL;
+            }
+        }
     }
 
-    arglist[i] = NULL;
+    // Validate the final command
+    if (pending_redirection != '\0') {
+        fprintf(stderr, "Syntax error: missing redirection filename\n");
+        free_commands(head);
+        return NULL;
+    }
 
-    return arglist;
+    if (current->argc == 0) {
+        fprintf(stderr, "Syntax error: missing command\n");
+        free_commands(head);
+        return NULL;
+    }
+
+    return head;
 }

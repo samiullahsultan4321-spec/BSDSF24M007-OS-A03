@@ -1,12 +1,11 @@
-
 #include "shell.h"
+
 
 // Add a command to history
 void history_add(History* history, const char* command)
 {
     unsigned long index = history->total % HISTORY_SIZE;
 
-    // Allocate memory for the new command
     char* copy = malloc(strlen(command) + 1);
 
     if (copy == NULL) {
@@ -16,7 +15,6 @@ void history_add(History* history, const char* command)
 
     strcpy(copy, command);
 
-    // Free old command before overwriting its slot
     free(history->commands[index]);
 
     history->commands[index] = copy;
@@ -24,15 +22,17 @@ void history_add(History* history, const char* command)
     history->total++;
 }
 
+
 // Retrieve a command using its history number
-const char* custom_history_get(History* history, unsigned long number)
+const char* custom_history_get(
+    History* history,
+    unsigned long number
+)
 {
-    // Check whether number is valid
     if (number == 0 || number > history->total) {
         return NULL;
     }
 
-    // Find oldest available command number
     unsigned long oldest = 1;
 
     if (history->total > HISTORY_SIZE) {
@@ -43,11 +43,11 @@ const char* custom_history_get(History* history, unsigned long number)
         return NULL;
     }
 
-    // Calculate circular array index
     unsigned long index = (number - 1) % HISTORY_SIZE;
 
     return history->commands[index];
 }
+
 
 // Display command history
 void display_history(History* history)
@@ -67,6 +67,7 @@ void display_history(History* history)
         }
     }
 }
+
 
 // Handle built-in commands
 int handle_builtin(char* arglist[], History* history)
@@ -93,6 +94,7 @@ int handle_builtin(char* arglist[], History* history)
             if (home == NULL) {
                 fprintf(stderr, "cd: HOME not set\n");
             }
+
             else if (chdir(home) != 0) {
                 perror("cd");
             }

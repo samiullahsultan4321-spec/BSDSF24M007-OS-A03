@@ -1,19 +1,20 @@
+#define _POSIX_C_SOURCE 200809L
 
 #include "shell.h"
 
 #include <dirent.h>
-#include <sys/stat.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
-// Variables used by command completion
+
+// Completion state
 static char* path_copy = NULL;
 static char* path_saveptr = NULL;
-static char* current_path = NULL;
+static char* dir_path = NULL;
 static DIR* current_dir = NULL;
 
 
-// Clean up command completion resources
+// Clean up completion resources
 static void cleanup_generator(void)
 {
     if (current_dir != NULL) {
@@ -25,7 +26,7 @@ static void cleanup_generator(void)
     path_copy = NULL;
 
     path_saveptr = NULL;
-    current_path = NULL;
+    dir_path = NULL;
 }
 
 
@@ -35,8 +36,8 @@ static char* command_generator(const char* text, int state)
     struct dirent* entry;
     struct stat file_info;
 
-    // Initialize when a new completion request starts
     if (state == 0) {
+
         cleanup_generator();
 
         const char* path = getenv("PATH");
@@ -50,6 +51,8 @@ static char* command_generator(const char* text, int state)
         if (path_copy == NULL) {
             return NULL;
         }
+
+        dir_path = strtok_r(path_copy, ":", &path_saveptr);
     }
 
     if (path_copy == NULL) {
@@ -58,36 +61,31 @@ static char* command_generator(const char* text, int state)
 
     while (1) {
 
-        // Open the next PATH directory
         if (current_dir == NULL) {
 
-            current_path = strtok_r(path_copy, ":", &path_saveptr);
-
-            if (current_path == NULL) {
+            if (dir_path == NULL) {
                 cleanup_generator();
                 return NULL;
             }
 
-            current_dir = opendir(
-                *current_path == '\0' ? "." : current_path
-            );
+            current_dir = opendir(dir_path);
 
             if (current_dir == NULL) {
+                dir_path = strtok_r(NULL, ":", &path_saveptr);
                 continue;
             }
         }
 
-        // Search for matching executable files
         while ((entry = readdir(current_dir)) != NULL) {
 
             if (strncmp(entry->d_name, text, strlen(text)) != 0) {
                 continue;
             }
 
-            size_t dir_len = strlen(current_path);
-            size_t name_len = strlen(entry->d_name);
+            size_t size = strlen(dir_path) +
+                          strlen(entry->d_name) + 2;
 
-            char* full_path = malloc(dir_len + name_len + 2);
+            char* full_path = malloc(size);
 
             if (full_path == NULL) {
                 continue;
@@ -95,9 +93,9 @@ static char* command_generator(const char* text, int state)
 
             snprintf(
                 full_path,
-                dir_len + name_len + 2,
+                size,
                 "%s/%s",
-                current_path,
+                dir_path,
                 entry->d_name
             );
 
@@ -113,33 +111,36 @@ static char* command_generator(const char* text, int state)
             }
         }
 
-        // Move to the next directory
         closedir(current_dir);
         current_dir = NULL;
+
+        dir_path = strtok_r(NULL, ":", &path_saveptr);
     }
 }
 
 
-// Handle both command and filename completion
+// Command and filename completion
 static char** shell_completion(const char* text, int start, int end)
 {
     (void)end;
 
-    // At the beginning of the line, complete commands
     if (start == 0 && strchr(text, '/') == NULL) {
-        rl_attempted_completion_over = 0;
+
+        rl_attempted_completion_over = 1;
+
         return rl_completion_matches(text, command_generator);
     }
 
-    // Otherwise, use Readline's default filename completion
+    // Use Readline's default filename completion
     return NULL;
 }
 
 
-// Check whether a command contains only whitespace
+// Check for empty or whitespace-only input
 static int is_blank(const char* command)
 {
     while (*command != '\0') {
+
         if (!isspace((unsigned char)*command)) {
             return 0;
         }
@@ -154,36 +155,33 @@ static int is_blank(const char* command)
 int main(void)
 {
     char* cmdline;
-    char** arglist;
+    Command* commands;
 
-    // Initialize custom history
     History history = {0};
 
     // Initialize GNU Readline history
     using_history();
     stifle_history(HISTORY_SIZE);
 
-    // Enable command and filename completion
+    // Enable completion
     rl_attempted_completion_function = shell_completion;
 
     while (1) {
 
-        // Read command using GNU Readline
         cmdline = readline(PROMPT);
 
-        // Handle Ctrl+D
+        // Ctrl+D
         if (cmdline == NULL) {
             printf("\nExiting MyShell...\n");
             break;
         }
 
-        // Ignore empty or whitespace-only commands
         if (is_blank(cmdline)) {
             free(cmdline);
             continue;
         }
 
-        // Check for !n before adding the command to history
+        // Handle !n history expansion
         if (cmdline[0] == '!') {
 
             char* endptr;
@@ -202,7 +200,6 @@ int main(void)
                 10
             );
 
-            // Allow trailing spaces
             while (isspace((unsigned char)*endptr)) {
                 endptr++;
             }
@@ -213,8 +210,8 @@ int main(void)
                 continue;
             }
 
-            // Retrieve the requested command
-            const char* previous = custom_history_get(&history, number);
+            const char* previous =
+                custom_history_get(&history, number);
 
             if (previous == NULL) {
                 printf("No such command in history.\n");
@@ -222,7 +219,6 @@ int main(void)
                 continue;
             }
 
-            // Allocate enough memory for the recalled command
             char* expanded = strdup(previous);
 
             if (expanded == NULL) {
@@ -237,38 +233,39 @@ int main(void)
             printf("%s\n", cmdline);
         }
 
-        // Store the actual command in custom history
+        // Save actual command in both histories
         history_add(&history, cmdline);
-
-        // Also store it in Readline history for arrow navigation
         add_history(cmdline);
 
-        // Tokenize command
-        arglist = tokenize(cmdline);
+        // Parse command line
+        commands = tokenize(cmdline);
 
-        if (arglist == NULL) {
+        if (commands == NULL) {
             free(cmdline);
             continue;
         }
 
-        // Check built-in commands first
-        if (arglist[0] != NULL) {
+        // Handle standalone built-ins without redirection
+        if (commands->next == NULL &&
+            commands->input_file == NULL &&
+            commands->output_file == NULL) {
 
-            if (handle_builtin(arglist, &history) == 0) {
-                execute(arglist);
+            if (handle_builtin(commands->argv, &history) == 0) {
+                execute_pipeline(commands);
             }
         }
 
-        // Free allocated argument memory
-        for (int i = 0; arglist[i] != NULL; i++) {
-            free(arglist[i]);
+        else {
+            // Execute external commands and pipelines
+            execute_pipeline(commands);
         }
 
-        free(arglist);
+        // Free parser memory
+        free_commands(commands);
         free(cmdline);
     }
 
-    // Clean up history memory
+    // Free custom history memory
     for (int i = 0; i < HISTORY_SIZE; i++) {
         free(history.commands[i]);
     }
