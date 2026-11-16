@@ -25,7 +25,7 @@ void history_add(History* history, const char* command)
 }
 
 // Retrieve a command using its history number
-const char* history_get(History* history, unsigned long number)
+const char* custom_history_get(History* history, unsigned long number)
 {
     // Check whether number is valid
     if (number == 0 || number > history->total) {
@@ -60,7 +60,7 @@ void display_history(History* history)
 
     for (unsigned long i = oldest; i <= history->total; i++) {
 
-        const char* command = history_get(history, i);
+        const char* command = custom_history_get(history, i);
 
         if (command != NULL) {
             printf("%lu  %s\n", i, command);

@@ -30,6 +30,6 @@ int execute(char* arglist[]);
 // Built-in and history functions
 int handle_builtin(char* arglist[], History* history);
 void history_add(History* history, const char* command);
-const char* history_get(History* history, unsigned long number);
+const char* custom_history_get(History* history, unsigned long number);
 
 #endif
