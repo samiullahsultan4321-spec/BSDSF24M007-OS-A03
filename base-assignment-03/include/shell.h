@@ -23,6 +23,13 @@ typedef struct {
     unsigned long total;
 } History;
 
+// Variable node for storage
+typedef struct VarNode {
+    char* name;
+    char* value;
+    struct VarNode* next;
+} VarNode;
+
 // Background Job representation
 typedef struct {
     pid_t pid;
@@ -52,12 +59,19 @@ typedef struct Command {
 Command* tokenize(char* cmdline);
 void free_commands(Command* commands);
 char** split_command_lines(char* cmdline, int* num_cmds);
+int is_assignment(const char* str, char** name_out, char** val_out);
+
+// Variable functions
+void var_set(VarNode** head, const char* name, const char* value);
+const char* var_get(VarNode* head, const char* name);
+void var_free(VarNode* head);
+void expand_command_variables(Command* commands, VarNode* vars);
 
 // Execution
 int execute_pipeline(Command* commands, JobList* job_list, const char* original_cmd);
 
 // Built-in and history functions
-int handle_builtin(char* arglist[], History* history, JobList* job_list);
+int handle_builtin(char* arglist[], History* history, JobList* job_list, VarNode* vars);
 void history_add(History* history, const char* command);
 const char* custom_history_get(History* history, unsigned long number);
 void display_history(History* history);

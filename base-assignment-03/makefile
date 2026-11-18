@@ -3,7 +3,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g -Iinclude
 LDLIBS = -lreadline
 
-TARGET = bin/myshell
+TARGET = bin/myshell1
 
 OBJECTS = obj/main.o obj/shell.o obj/execute.o obj/builtins.o
 
@@ -22,9 +22,9 @@ obj/%.o: src/%.c include/shell.h | obj
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -f obj/*.o bin/myshell
+	rm -f obj/*.o bin/myshell1
 
 run: $(TARGET)
-	./bin/myshell
+	./bin/myshell1
 
 .PHONY: all clean run

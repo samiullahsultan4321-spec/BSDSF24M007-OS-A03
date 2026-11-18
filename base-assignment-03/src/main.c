@@ -239,10 +239,11 @@ static void parse_if_block(const char* block_str, IfBlock* out)
 }
 
 // Execute the if-then-else-fi block
-static int execute_if_block(IfBlock* block, History* history, JobList* job_list)
+static int execute_if_block(IfBlock* block, History* history, JobList* job_list, VarNode* vars)
 {
     Command* cond_cmds = tokenize(block->condition_str);
     if (!cond_cmds) return -1;
+    expand_command_variables(cond_cmds, vars);
 
     int exit_status = 0;
     if (cond_cmds->next == NULL &&
@@ -250,7 +251,7 @@ static int execute_if_block(IfBlock* block, History* history, JobList* job_list)
         cond_cmds->output_file == NULL &&
         !cond_cmds->background) {
 
-        if (handle_builtin(cond_cmds->argv, history, job_list) == 0) {
+        if (handle_builtin(cond_cmds->argv, history, job_list, vars) == 0) {
             exit_status = execute_pipeline(cond_cmds, job_list, block->condition_str);
         }
     } else {
@@ -258,13 +259,11 @@ static int execute_if_block(IfBlock* block, History* history, JobList* job_list)
     }
     free_commands(cond_cmds);
 
-    // Choose branch: exit status 0 is success (then), non-zero is failure (else)
     char* branch_str = (exit_status == 0) ? block->then_str : block->else_str;
     if (branch_str == NULL) {
         return 0;
     }
 
-    // Normalize newlines to semicolons so multi-line blocks work with command chaining
     char* normalized = strdup(branch_str);
     for (int i = 0; normalized[i] != '\0'; i++) {
         if (normalized[i] == '\n' || normalized[i] == '\r') {
@@ -275,15 +274,25 @@ static int execute_if_block(IfBlock* block, History* history, JobList* job_list)
     int num_subcmds = 0;
     char** subcmds = split_command_lines(normalized, &num_subcmds);
     for (int i = 0; i < num_subcmds; i++) {
+        char* vname = NULL;
+        char* vval = NULL;
+        if (is_assignment(subcmds[i], &vname, &vval)) {
+            var_set(&vars, vname, vval);
+            free(vname);
+            free(vval);
+            continue;
+        }
+
         Command* cmds = tokenize(subcmds[i]);
         if (cmds == NULL) continue;
+        expand_command_variables(cmds, vars);
 
         if (cmds->next == NULL &&
             cmds->input_file == NULL &&
             cmds->output_file == NULL &&
             !cmds->background) {
 
-            if (handle_builtin(cmds->argv, history, job_list) == 0) {
+            if (handle_builtin(cmds->argv, history, job_list, vars) == 0) {
                 execute_pipeline(cmds, job_list, subcmds[i]);
             }
         } else {
@@ -306,6 +315,7 @@ int main(void)
     char* cmdline;
     History history = {0};
     JobList job_list;
+    VarNode* vars = NULL;
 
     job_list_init(&job_list);
 
@@ -317,7 +327,6 @@ int main(void)
     rl_attempted_completion_function = shell_completion;
 
     while (1) {
-        // Reap any terminated background jobs before prompting
         pid_t reaped_pid;
         int status;
         while ((reaped_pid = waitpid(-1, &status, WNOHANG)) > 0) {
@@ -326,7 +335,6 @@ int main(void)
 
         cmdline = readline(PROMPT);
 
-        // Ctrl+D
         if (cmdline == NULL) {
             printf("\nExiting MyShell...\n");
             break;
@@ -366,7 +374,7 @@ int main(void)
             parse_if_block(full_block, &if_block);
 
             if (if_block.condition_str && if_block.then_str) {
-                execute_if_block(&if_block, &history, &job_list);
+                execute_if_block(&if_block, &history, &job_list, vars);
             } else {
                 fprintf(stderr, "Syntax error in if-then-else block\n");
             }
@@ -429,11 +437,23 @@ int main(void)
         char** subcmds = split_command_lines(cmdline, &num_subcmds);
 
         for (int i = 0; i < num_subcmds; i++) {
-            Command* commands = tokenize(subcmds[i]);
+            // Check if sub-command is a variable assignment
+            char* vname = NULL;
+            char* vval = NULL;
+            if (is_assignment(subcmds[i], &vname, &vval)) {
+                var_set(&vars, vname, vval);
+                free(vname);
+                free(vval);
+                continue;
+            }
 
+            Command* commands = tokenize(subcmds[i]);
             if (commands == NULL) {
                 continue;
             }
+
+            // Expand variables before execution
+            expand_command_variables(commands, vars);
 
             // Handle standalone built-ins without redirection or piping
             if (commands->next == NULL &&
@@ -441,7 +461,7 @@ int main(void)
                 commands->output_file == NULL &&
                 !commands->background) {
 
-                if (handle_builtin(commands->argv, &history, &job_list) == 0) {
+                if (handle_builtin(commands->argv, &history, &job_list, vars) == 0) {
                     execute_pipeline(commands, &job_list, subcmds[i]);
                 }
             } else {
@@ -451,7 +471,6 @@ int main(void)
             free_commands(commands);
         }
 
-        // Free subcommands array
         for (int i = 0; i < num_subcmds; i++) {
             free(subcmds[i]);
         }
@@ -459,6 +478,8 @@ int main(void)
 
         free(cmdline);
     }
+
+    var_free(vars);
 
     // Free custom history memory
     for (int i = 0; i < HISTORY_SIZE; i++) {

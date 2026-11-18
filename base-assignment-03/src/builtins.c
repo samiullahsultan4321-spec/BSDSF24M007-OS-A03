@@ -32,7 +32,6 @@ void job_list_remove(JobList* list, pid_t pid)
     for (int i = 0; i < list->count; i++) {
         if (list->jobs[i].pid == pid) {
             free(list->jobs[i].command_str);
-            // Shift remaining jobs
             for (int j = i; j < list->count - 1; j++) {
                 list->jobs[j] = list->jobs[j + 1];
             }
@@ -102,7 +101,7 @@ void display_history(History* history)
 }
 
 // Handle built-in commands
-int handle_builtin(char* arglist[], History* history, JobList* job_list)
+int handle_builtin(char* arglist[], History* history, JobList* job_list, VarNode* vars)
 {
     if (arglist[0] == NULL) {
         return 1;
@@ -141,6 +140,7 @@ int handle_builtin(char* arglist[], History* history, JobList* job_list)
         printf("help             Display help\n");
         printf("jobs             Display job status\n");
         printf("history          Display command history\n");
+        printf("set              Display shell variables\n");
         printf("!n               Execute command number n\n");
         printf("=====================================\n\n");
         return 1;
@@ -155,6 +155,16 @@ int handle_builtin(char* arglist[], History* history, JobList* job_list)
     // HISTORY
     else if (strcmp(arglist[0], "history") == 0) {
         display_history(history);
+        return 1;
+    }
+
+    // SET (Display variables)
+    else if (strcmp(arglist[0], "set") == 0) {
+        VarNode* current = vars;
+        while (current != NULL) {
+            printf("%s=%s\n", current->name, current->value);
+            current = current->next;
+        }
         return 1;
     }
 
