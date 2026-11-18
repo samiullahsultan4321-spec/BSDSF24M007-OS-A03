@@ -14,6 +14,7 @@
 
 #define MAXARGS 100
 #define HISTORY_SIZE 20
+#define MAX_JOBS 100
 #define PROMPT "myshell> "
 
 // Custom command history
@@ -22,6 +23,19 @@ typedef struct {
     unsigned long total;
 } History;
 
+// Background Job representation
+typedef struct {
+    pid_t pid;
+    int job_id;
+    char* command_str;
+} Job;
+
+typedef struct {
+    Job jobs[MAX_JOBS];
+    int count;
+    int next_id;
+} JobList;
+
 // Parsed command
 typedef struct Command {
     char** argv;
@@ -29,6 +43,7 @@ typedef struct Command {
 
     char* input_file;
     char* output_file;
+    int background; // 1 if execution is in background (&)
 
     struct Command* next;
 } Command;
@@ -36,14 +51,21 @@ typedef struct Command {
 // Parser functions
 Command* tokenize(char* cmdline);
 void free_commands(Command* commands);
+char** split_command_lines(char* cmdline, int* num_cmds);
 
 // Execution
-int execute_pipeline(Command* commands);
+int execute_pipeline(Command* commands, JobList* job_list, const char* original_cmd);
 
 // Built-in and history functions
-int handle_builtin(char* arglist[], History* history);
+int handle_builtin(char* arglist[], History* history, JobList* job_list);
 void history_add(History* history, const char* command);
 const char* custom_history_get(History* history, unsigned long number);
 void display_history(History* history);
+
+// Job management functions
+void job_list_init(JobList* list);
+void job_list_add(JobList* list, pid_t pid, const char* cmd_str);
+void job_list_remove(JobList* list, pid_t pid);
+void job_list_print(JobList* list);
 
 #endif

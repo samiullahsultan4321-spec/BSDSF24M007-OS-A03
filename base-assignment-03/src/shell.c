@@ -22,7 +22,6 @@ static int add_argument(Command* command, char* argument)
     return 0;
 }
 
-
 // Create a new command
 static Command* create_command(void)
 {
@@ -35,7 +34,6 @@ static Command* create_command(void)
 
     return command;
 }
-
 
 // Free all parsed commands
 void free_commands(Command* commands)
@@ -57,6 +55,94 @@ void free_commands(Command* commands)
     }
 }
 
+// Split command line by semicolon (;), respecting quotes
+char** split_command_lines(char* cmdline, int* num_cmds)
+{
+    if (cmdline == NULL) {
+        *num_cmds = 0;
+        return NULL;
+    }
+
+    int capacity = 10;
+    char** cmds = malloc(sizeof(char*) * capacity);
+    if (cmds == NULL) {
+        perror("malloc");
+        *num_cmds = 0;
+        return NULL;
+    }
+
+    int count = 0;
+    size_t len = strlen(cmdline);
+    char* current_cmd = malloc(len + 1);
+    if (current_cmd == NULL) {
+        perror("malloc");
+        free(cmds);
+        *num_cmds = 0;
+        return NULL;
+    }
+
+    size_t idx = 0;
+    char quote = '\0';
+    int i = 0;
+
+    while (cmdline[i] != '\0') {
+        char c = cmdline[i];
+
+        if (quote == '\0' && (c == '\'' || c == '"')) {
+            quote = c;
+            current_cmd[idx++] = c;
+        } else if (quote != '\0' && c == quote) {
+            quote = '\0';
+            current_cmd[idx++] = c;
+        } else if (quote == '\0' && c == ';') {
+            current_cmd[idx] = '\0';
+            
+            // Trim leading/trailing whitespace
+            char* start = current_cmd;
+            while (*start && isspace((unsigned char)*start)) start++;
+            char* end = start + strlen(start) - 1;
+            while (end > start && isspace((unsigned char)*end)) *end-- = '\0';
+
+            if (*start != '\0') {
+                if (count >= capacity) {
+                    capacity *= 2;
+                    char** temp = realloc(cmds, sizeof(char*) * capacity);
+                    if (temp == NULL) {
+                        perror("realloc");
+                        break;
+                    }
+                    cmds = temp;
+                }
+                cmds[count++] = strdup(start);
+            }
+
+            idx = 0;
+        } else {
+            current_cmd[idx++] = c;
+        }
+        i++;
+    }
+
+    current_cmd[idx] = '\0';
+    char* start = current_cmd;
+    while (*start && isspace((unsigned char)*start)) start++;
+    char* end = start + strlen(start) - 1;
+    while (end > start && isspace((unsigned char)*end)) *end-- = '\0';
+
+    if (*start != '\0') {
+        if (count >= capacity) {
+            char** temp = realloc(cmds, sizeof(char*) * (count + 1));
+            if (temp != NULL) {
+                cmds = temp;
+            }
+        }
+        cmds[count++] = strdup(start);
+    }
+
+    free(current_cmd);
+    *num_cmds = count;
+    return cmds;
+}
 
 // Tokenize and parse the command line
 Command* tokenize(char* cmdline)
@@ -66,15 +152,12 @@ Command* tokenize(char* cmdline)
     }
 
     Command* head = create_command();
-
     if (head == NULL) {
         return NULL;
     }
 
     Command* current = head;
-
     char pending_redirection = '\0';
-
     const char* p = cmdline;
 
     while (*p != '\0') {
@@ -86,6 +169,28 @@ Command* tokenize(char* cmdline)
 
         if (*p == '\0') {
             break;
+        }
+
+        // Handle background operator &
+        if (*p == '&') {
+            // Check if & is at the end or followed by whitespace
+            const char* next_p = p + 1;
+            while (*next_p && isspace((unsigned char)*next_p)) next_p++;
+            
+            if (*next_p == '\0') {
+                // Set background flag on the final command in pipeline
+                Command* last = head;
+                while (last->next != NULL) {
+                    last = last->next;
+                }
+                last->background = 1;
+                p++;
+                break; // & terminates parsing for this line
+            } else {
+                fprintf(stderr, "Syntax error near '&'\n");
+                free_commands(head);
+                return NULL;
+            }
         }
 
         // Handle special operators
@@ -111,7 +216,6 @@ Command* tokenize(char* cmdline)
 
             pending_redirection = *p;
             p++;
-
             continue;
         }
 
@@ -125,7 +229,6 @@ Command* tokenize(char* cmdline)
             }
 
             current->next = create_command();
-
             if (current->next == NULL) {
                 free_commands(head);
                 return NULL;
@@ -133,7 +236,6 @@ Command* tokenize(char* cmdline)
 
             current = current->next;
             p++;
-
             continue;
         }
 
@@ -155,12 +257,11 @@ Command* tokenize(char* cmdline)
 
             if (quote == '\0' &&
                 (isspace((unsigned char)*p) ||
-                 *p == '<' || *p == '>' || *p == '|')) {
+                 *p == '<' || *p == '>' || *p == '|' || *p == '&')) {
                 break;
             }
 
             if (*p == '\\' && quote != '\'') {
-
                 if (*(p + 1) != '\0') {
                     word[i++] = *(p + 1);
                     p += 2;
@@ -170,7 +271,6 @@ Command* tokenize(char* cmdline)
             }
 
             if (*p == '\'' || *p == '"') {
-
                 if (quote == '\0') {
                     quote = *p;
                     started = 1;
@@ -209,13 +309,10 @@ Command* tokenize(char* cmdline)
             current->input_file = word;
             pending_redirection = '\0';
         }
-
         else if (pending_redirection == '>') {
             current->output_file = word;
             pending_redirection = '\0';
         }
-
-        // Otherwise, add it as a command argument
         else {
             if (add_argument(current, word) != 0) {
                 free(word);
@@ -225,7 +322,6 @@ Command* tokenize(char* cmdline)
         }
     }
 
-    // Validate the final command
     if (pending_redirection != '\0') {
         fprintf(stderr, "Syntax error: missing redirection filename\n");
         free_commands(head);
