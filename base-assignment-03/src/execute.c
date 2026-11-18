@@ -156,7 +156,6 @@ int execute_pipeline(Command* commands, JobList* job_list, const char* original_
 
     // If background execution, do not wait; add to job list
     if (is_background) {
-        // Use the last process in the pipeline as the job identifier PID
         pid_t bg_pid = pids[started - 1];
         job_list_add(job_list, bg_pid, original_cmd);
         printf("[%d] %d\n", job_list->jobs[job_list->count - 1].job_id, (int)bg_pid);
@@ -164,7 +163,8 @@ int execute_pipeline(Command* commands, JobList* job_list, const char* original_
         return 0;
     }
 
-    // Otherwise, wait for every child process in the pipeline
+    // Wait for every child process and capture exit status of the last process
+    int last_exit_status = 0;
     for (int i = 0; i < started; i++) {
         int status;
         while (waitpid(pids[i], &status, 0) < 0) {
@@ -175,8 +175,15 @@ int execute_pipeline(Command* commands, JobList* job_list, const char* original_
             failed = 1;
             break;
         }
+        if (i == started - 1) {
+            if (WIFEXITED(status)) {
+                last_exit_status = WEXITSTATUS(status);
+            } else if (WIFSIGNALED(status)) {
+                last_exit_status = 128 + WTERMSIG(status);
+            }
+        }
     }
 
     free(pids);
-    return failed ? -1 : 0;
+    return failed ? -1 : last_exit_status;
 }

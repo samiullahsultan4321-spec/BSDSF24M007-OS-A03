@@ -123,6 +123,184 @@ static int is_blank(const char* command)
     return 1;
 }
 
+// Count nesting depth of if/fi keywords
+static int count_if_depth(const char* str)
+{
+    int depth = 0;
+    const char* p = str;
+    while (*p) {
+        if ((p == str || isspace((unsigned char)*(p-1)) || *p == ';') &&
+            strncmp(p, "if", 2) == 0 &&
+            (isspace((unsigned char)*(p+2)) || p[2] == '\0' || p[2] == ';')) {
+            depth++;
+            p += 2;
+        } else if ((p == str || isspace((unsigned char)*(p-1)) || *p == ';') &&
+                   strncmp(p, "fi", 2) == 0 &&
+                   (isspace((unsigned char)*(p+2)) || p[2] == '\0' || p[2] == ';')) {
+            depth--;
+            p += 2;
+        } else {
+            p++;
+        }
+    }
+    return depth;
+}
+
+// Structure to hold parsed parts of an if-then-else-fi block
+typedef struct {
+    char* condition_str;
+    char* then_str;
+    char* else_str;
+} IfBlock;
+
+// Parse an if block into condition, then, and else components
+static void parse_if_block(const char* block_str, IfBlock* out)
+{
+    out->condition_str = NULL;
+    out->then_str = NULL;
+    out->else_str = NULL;
+
+    const char* p = block_str;
+    while (*p && isspace((unsigned char)*p)) p++;
+    if (strncmp(p, "if", 2) == 0) p += 2;
+
+    const char* cond_start = p;
+    const char* then_pos = NULL;
+
+    p = cond_start;
+    while (*p) {
+        if ((p == block_str || isspace((unsigned char)*(p-1)) || *p == ';') &&
+            strncmp(p, "then", 4) == 0 &&
+            (isspace((unsigned char)*(p+4)) || p[4] == '\0' || p[4] == ';')) {
+            then_pos = p;
+            break;
+        }
+        p++;
+    }
+    if (!then_pos) return;
+
+    size_t cond_len = then_pos - cond_start;
+    out->condition_str = malloc(cond_len + 1);
+    memcpy(out->condition_str, cond_start, cond_len);
+    out->condition_str[cond_len] = '\0';
+
+    p = then_pos + 4;
+    const char* then_start = p;
+    const char* else_pos = NULL;
+    const char* fi_pos = NULL;
+
+    p = then_start;
+    while (*p) {
+        if ((p == block_str || isspace((unsigned char)*(p-1)) || *p == ';') &&
+            strncmp(p, "else", 4) == 0 &&
+            (isspace((unsigned char)*(p+4)) || p[4] == '\0' || p[4] == ';')) {
+            else_pos = p;
+            break;
+        }
+        if ((p == block_str || isspace((unsigned char)*(p-1)) || *p == ';') &&
+            strncmp(p, "fi", 2) == 0 &&
+            (isspace((unsigned char)*(p+2)) || p[2] == '\0' || p[2] == ';')) {
+            fi_pos = p;
+            break;
+        }
+        p++;
+    }
+
+    if (else_pos) {
+        size_t then_len = else_pos - then_start;
+        out->then_str = malloc(then_len + 1);
+        memcpy(out->then_str, then_start, then_len);
+        out->then_str[then_len] = '\0';
+
+        p = else_pos + 4;
+        const char* else_start = p;
+
+        while (*p) {
+            if ((p == block_str || isspace((unsigned char)*(p-1)) || *p == ';') &&
+                strncmp(p, "fi", 2) == 0 &&
+                (isspace((unsigned char)*(p+2)) || p[2] == '\0' || p[2] == ';')) {
+                fi_pos = p;
+                break;
+            }
+            p++;
+        }
+        if (fi_pos) {
+            size_t else_len = fi_pos - else_start;
+            out->else_str = malloc(else_len + 1);
+            memcpy(out->else_str, else_start, else_len);
+            out->else_str[else_len] = '\0';
+        }
+    } else if (fi_pos) {
+        size_t then_len = fi_pos - then_start;
+        out->then_str = malloc(then_len + 1);
+        memcpy(out->then_str, then_start, then_len);
+        out->then_str[then_len] = '\0';
+    }
+}
+
+// Execute the if-then-else-fi block
+static int execute_if_block(IfBlock* block, History* history, JobList* job_list)
+{
+    Command* cond_cmds = tokenize(block->condition_str);
+    if (!cond_cmds) return -1;
+
+    int exit_status = 0;
+    if (cond_cmds->next == NULL &&
+        cond_cmds->input_file == NULL &&
+        cond_cmds->output_file == NULL &&
+        !cond_cmds->background) {
+
+        if (handle_builtin(cond_cmds->argv, history, job_list) == 0) {
+            exit_status = execute_pipeline(cond_cmds, job_list, block->condition_str);
+        }
+    } else {
+        exit_status = execute_pipeline(cond_cmds, job_list, block->condition_str);
+    }
+    free_commands(cond_cmds);
+
+    // Choose branch: exit status 0 is success (then), non-zero is failure (else)
+    char* branch_str = (exit_status == 0) ? block->then_str : block->else_str;
+    if (branch_str == NULL) {
+        return 0;
+    }
+
+    // Normalize newlines to semicolons so multi-line blocks work with command chaining
+    char* normalized = strdup(branch_str);
+    for (int i = 0; normalized[i] != '\0'; i++) {
+        if (normalized[i] == '\n' || normalized[i] == '\r') {
+            normalized[i] = ';';
+        }
+    }
+
+    int num_subcmds = 0;
+    char** subcmds = split_command_lines(normalized, &num_subcmds);
+    for (int i = 0; i < num_subcmds; i++) {
+        Command* cmds = tokenize(subcmds[i]);
+        if (cmds == NULL) continue;
+
+        if (cmds->next == NULL &&
+            cmds->input_file == NULL &&
+            cmds->output_file == NULL &&
+            !cmds->background) {
+
+            if (handle_builtin(cmds->argv, history, job_list) == 0) {
+                execute_pipeline(cmds, job_list, subcmds[i]);
+            }
+        } else {
+            execute_pipeline(cmds, job_list, subcmds[i]);
+        }
+        free_commands(cmds);
+    }
+
+    for (int i = 0; i < num_subcmds; i++) {
+        free(subcmds[i]);
+    }
+    free(subcmds);
+    free(normalized);
+
+    return 0;
+}
+
 int main(void)
 {
     char* cmdline;
@@ -156,6 +334,47 @@ int main(void)
 
         if (is_blank(cmdline)) {
             free(cmdline);
+            continue;
+        }
+
+        // Check for multi-line if block
+        char* trimmed = cmdline;
+        while (*trimmed && isspace((unsigned char)*trimmed)) trimmed++;
+
+        if (strncmp(trimmed, "if", 2) == 0 && (trimmed[2] == '\0' || isspace((unsigned char)trimmed[2]))) {
+            int depth = count_if_depth(cmdline);
+            char* full_block = cmdline;
+
+            while (depth > 0) {
+                char* next_line = readline("> ");
+                if (!next_line) break;
+
+                size_t new_len = strlen(full_block) + strlen(next_line) + 2;
+                char* temp = malloc(new_len);
+                sprintf(temp, "%s\n%s", full_block, next_line);
+                free(full_block);
+                full_block = temp;
+                free(next_line);
+
+                depth = count_if_depth(full_block);
+            }
+
+            history_add(&history, full_block);
+            add_history(full_block);
+
+            IfBlock if_block;
+            parse_if_block(full_block, &if_block);
+
+            if (if_block.condition_str && if_block.then_str) {
+                execute_if_block(&if_block, &history, &job_list);
+            } else {
+                fprintf(stderr, "Syntax error in if-then-else block\n");
+            }
+
+            free(if_block.condition_str);
+            free(if_block.then_str);
+            free(if_block.else_str);
+            free(full_block);
             continue;
         }
 
